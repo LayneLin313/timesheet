@@ -9,7 +9,7 @@
  * 'controllerchange' and reloads once, so open tabs switch to the new version.
  * localStorage (app data, key 'worklog.v1') is never touched by this worker.
  */
-const VERSION = 'v3';
+const VERSION = 'v4';
 const CACHE = `timesheet-${VERSION}`;
 const PRECACHE = [
   './',

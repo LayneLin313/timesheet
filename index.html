@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="color-scheme" content="light dark" />
 <title>工時記錄</title>
-<meta name="theme-color" content="#F6F8FB" media="(prefers-color-scheme: light)" />
-<meta name="theme-color" content="#0E1624" media="(prefers-color-scheme: dark)" />
+<meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)" />
+<meta name="theme-color" content="#121B2B" media="(prefers-color-scheme: dark)" />
 <link rel="manifest" href="./manifest.webmanifest" />
 <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png" />
 <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
@@ -35,6 +35,10 @@
   --chart-mintGreen: #2E8B57;
   --chart-sunsetOrange: #D9663D;
   --radius: 0.5rem;
+  /* title bar: solid, high contrast (WCAG AA) */
+  --topbar-bg: #FFFFFF;
+  --topbar-fg: #0F1B2D;
+  --topbar-border: #BCC6D4;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -52,13 +56,16 @@
     --chart-tangerineOrange: #E39A4F;
     --chart-mintGreen: #5DBB88;
     --chart-sunsetOrange: #F08A5D;
+    --topbar-bg: #121B2B;
+    --topbar-fg: #FFFFFF;
+    --topbar-border: #435371;
   }
 }
 
 /* host base (Tailwind preflight subset) */
 @layer base {
 *, ::before, ::after { box-sizing: border-box; margin: 0; padding: 0; border: 0 solid; }
-html, body { height: 100%; }
+html, body { height: 100%; background: var(--background); overscroll-behavior-y: none; }
 body {
   background: var(--background);
   color: var(--foreground);
@@ -72,7 +79,7 @@ button { cursor: pointer; }
 ul { list-style: none; }
 #root {
   height: 100dvh;
-  padding-top: env(safe-area-inset-top, 0px);
+  /* top inset is padded inside .cl-topbar, so the bar's solid colour fills the notch area */
   padding-bottom: env(safe-area-inset-bottom, 0px);
   padding-left: env(safe-area-inset-left, 0px);
   padding-right: env(safe-area-inset-right, 0px);
@@ -83,8 +90,28 @@ ul { list-style: none; }
 
 @layer components {
 /* host SDK components (shadcn-like) */
-.cl-topbar { display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 0 4px 0 12px; border-bottom: 1px solid var(--border); background: var(--background); flex-shrink: 0; }
-.cl-topbar-title { flex: 1; min-width: 0; font-size: 1rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cl-topbar {
+  /* sticky + solid: even if iOS scrolls/rubber-bands the whole document, nothing shows through the bar or the
+     safe-area strip it pads. z-index stays below the plugin's modal overlays (z-10/z-20). */
+  position: -webkit-sticky; position: sticky; top: 0; z-index: 5;
+  display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+  min-height: calc(48px + env(safe-area-inset-top, 0px));
+  padding: env(safe-area-inset-top, 0px) calc(4px + env(safe-area-inset-right, 0px)) 0 calc(12px + env(safe-area-inset-left, 0px));
+  /* #root pads the side insets; pull the bar out so its colour reaches the screen edges */
+  margin: 0 calc(-1 * env(safe-area-inset-right, 0px)) 0 calc(-1 * env(safe-area-inset-left, 0px));
+  border-bottom: 1px solid var(--topbar-border);
+  background: var(--topbar-bg); /* solid: no transparency, no blur */
+  color: var(--topbar-fg);
+  opacity: 1; -webkit-backdrop-filter: none; backdrop-filter: none;
+}
+.cl-topbar-title { flex: 1; min-width: 0; font-size: 1.0625rem; font-weight: 700; color: var(--topbar-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cl-topbar .cl-size-icon { color: var(--topbar-fg); }
+/* filter row (月/年 · 全部/加班/…) under the title bar: solid and sticky below bar + safe-area */
+.cl-topbar + div > .overflow-x-auto.border-b {
+  position: -webkit-sticky; position: sticky; z-index: 4;
+  top: calc(48px + env(safe-area-inset-top, 0px));
+  background: var(--background); opacity: 1; -webkit-backdrop-filter: none; backdrop-filter: none;
+}
 .cl-topbar-actions { display: flex; align-items: center; gap: 2px; }
 .cl-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; border-radius: calc(var(--radius) - 2px); font-size: .875rem; font-weight: 500; border: 1px solid transparent; transition: background-color .15s, color .15s; user-select: none; -webkit-user-select: none; }
 .cl-btn:disabled { opacity: .5; pointer-events: none; }
