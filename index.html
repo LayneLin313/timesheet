@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="color-scheme" content="light dark" />
+<title>工時記錄</title>
+<meta name="theme-color" content="#F6F8FB" media="(prefers-color-scheme: light)" />
+<meta name="theme-color" content="#0E1624" media="(prefers-color-scheme: dark)" />
+<link rel="manifest" href="./manifest.webmanifest" />
+<link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png" />
+<link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="apple-mobile-web-app-title" content="工時記錄" />
+<style>
+/* Same layer order as the plugin's Tailwind (unlayered rules would beat every utility). */
+@layer properties, theme, base, components, utilities, cubelv-plugin-variants;
+/* CubeLV host theme variables, from the plugin's own theme (WorkLogPlugin `theme`: ramp + colors + navy accent).
+   The plugin's Tailwind utilities are injected by app/worklog-plugin.js (compiled into the bundle). */
+:root {
+  color-scheme: light;
+  --background: #F6F8FB;   /* base00 */
+  --card: #FFFFFF;         /* semantic --card */
+  --foreground: #0F1B2D;   /* base100 */
+  --muted-foreground: #5E6B7F; /* base60 */
+  --border: #DAE0EA;       /* base20 */
+  --accent: #EBEFF5;       /* base10 */
+  --primary: #1E3A5F;      /* navy */
+  --primary-foreground: #FFFFFF;
+  --destructive: #C0392B;  /* red */
+  --chart-cherryRed: #C0392B;
+  --chart-tangerineOrange: #C77A2A;
+  --chart-mintGreen: #2E8B57;
+  --chart-sunsetOrange: #D9663D;
+  --radius: 0.5rem;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --background: #0E1624;
+    --card: #121B2B;       /* base05 */
+    --foreground: #E6ECF5;
+    --muted-foreground: #7C8BA6;
+    --border: #212D44;
+    --accent: #1B263B;     /* base15 */
+    --primary: #7FA7D9;
+    --primary-foreground: #0E1624;
+    --destructive: #E0675A;
+    --chart-cherryRed: #E0675A;
+    --chart-tangerineOrange: #E39A4F;
+    --chart-mintGreen: #5DBB88;
+    --chart-sunsetOrange: #F08A5D;
+  }
+}
+
+/* host base (Tailwind preflight subset) */
+@layer base {
+*, ::before, ::after { box-sizing: border-box; margin: 0; padding: 0; border: 0 solid; }
+html, body { height: 100%; }
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang TC', 'Noto Sans TC', 'Microsoft JhengHei', system-ui, sans-serif;
+  line-height: 1.5;
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+button, input, textarea { font: inherit; color: inherit; background: transparent; }
+button { cursor: pointer; }
+ul { list-style: none; }
+#root {
+  height: 100dvh;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+  background: var(--background);
+}
+
+}
+
+@layer components {
+/* host SDK components (shadcn-like) */
+.cl-topbar { display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 0 4px 0 12px; border-bottom: 1px solid var(--border); background: var(--background); flex-shrink: 0; }
+.cl-topbar-title { flex: 1; min-width: 0; font-size: 1rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cl-topbar-actions { display: flex; align-items: center; gap: 2px; }
+.cl-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; border-radius: calc(var(--radius) - 2px); font-size: .875rem; font-weight: 500; border: 1px solid transparent; transition: background-color .15s, color .15s; user-select: none; -webkit-user-select: none; }
+.cl-btn:disabled { opacity: .5; pointer-events: none; }
+.cl-btn:focus-visible, .cl-toggle-item:focus-visible, .cl-input:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.cl-btn-default { background: var(--primary); color: var(--primary-foreground); }
+.cl-btn-outline { border-color: var(--border); background: var(--background); color: var(--foreground); }
+.cl-btn-ghost { color: var(--foreground); }
+.cl-btn-destructive { background: var(--destructive); color: #fff; }
+@media (hover: hover) {
+  .cl-btn-outline:hover, .cl-btn-ghost:hover { background: var(--accent); }
+  .cl-btn-default:hover, .cl-btn-destructive:hover { opacity: .9; }
+}
+.cl-size-default { height: 36px; padding: 0 16px; }
+.cl-size-sm { height: 32px; padding: 0 12px; }
+.cl-size-icon { width: 40px; height: 40px; padding: 0; color: var(--muted-foreground); }
+.cl-input { height: 36px; padding: 0 12px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 2px); background: transparent; font-size: 16px; /* 16px stops iOS zoom */ }
+.cl-input::placeholder { color: var(--muted-foreground); }
+.cl-toggle-group { display: inline-flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.cl-toggle-item { height: 32px; min-width: 32px; padding: 0 10px; border-radius: calc(var(--radius) - 2px); font-size: .875rem; font-weight: 500; color: var(--muted-foreground); white-space: nowrap; }
+.cl-toggle-item[data-state="on"] { background: var(--accent); color: var(--foreground); font-weight: 600; }
+.cl-scroll { height: 100%; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+.wl-toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom, 0px)); z-index: 40; transform: translate(-50%, 16px); max-width: calc(100vw - 32px); padding: 10px 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); color: var(--foreground); font-size: .875rem; box-shadow: 0 10px 15px -3px #0000001a, 0 4px 6px -4px #0000001a; opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; }
+.wl-toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+/* PWA additions: 加班費 guard, import / export */
+.wl-locked { opacity: .45; cursor: not-allowed; }
+.wl-pay-hint { margin-top: -4px; text-align: right; }
+.wl-file-input { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; pointer-events: none; }
+.wl-wrap { flex-wrap: wrap; align-items: center; }
+.wl-list { margin: 4px 0; padding-left: 18px; list-style: disc; max-height: 160px; overflow-y: auto; }
+.wl-export-text { width: 100%; height: 160px; padding: 8px 10px; margin-top: 8px; font-size: 12px; resize: none; color: var(--foreground); }
+.wl-note { margin-right: auto; }
+.wl-warn { color: var(--chart-tangerineOrange); }
+}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="./vendor/react.production.min.js"></script>
+<script src="./vendor/react-dom.production.min.js"></script>
+<script src="./app/sdk-shim.js"></script>
+<script src="./app/worklog-plugin.js"></script>
+<script src="./app/io.js"></script>
+<script src="./app/main.js"></script>
+<script>
+// PWA: register the service worker (relative path, works under a GitHub Pages subpath).
+// When a new sw.js (bumped VERSION) takes control, reload once so the new files are used.
+if ('serviceWorker' in navigator) {
+  var hadController = !!navigator.serviceWorker.controller;
+  var reloading = false;
+  navigator.serviceWorker.addEventListener('controllerchange', function () {
+    if (!hadController) { hadController = true; return; } // first install: no reload needed
+    if (reloading) return;
+    reloading = true;
+    window.location.reload();
+  });
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('./sw.js').catch(function (err) {
+      console.warn('Service worker registration failed:', err);
+    });
+  });
+}
+</script>
+</body>
+</html>
