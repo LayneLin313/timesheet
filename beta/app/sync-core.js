@@ -6,6 +6,8 @@
  *       owner  這份快取屬於哪個帳號（null = 尚未登入過的本機資料）
  *       t      這一天最後編輯時間（毫秒，已加上伺服器時差 skew），按日 LWW 比較用
  *       dirty  尚未上傳；del 已刪除（tombstone）
+ *       lp     local-priority：第一次登入時這台裝置原有的日子（從沒同步過）。直到成功上傳前，
+ *              與雲端不同（含雲端 tombstone、出勤寫入）一律以本機為準，並以比雲端新的時間戳上傳。
  *
  * 遠端介面（remote）：
  *   pull(sinceIso)  -> rows   updated_at > sinceIso，依 updated_at 排序
@@ -69,6 +71,19 @@
       return s;
     }
     var st = loadState();
+    // v8：上傳會蓋掉／刪掉的雲端版本，先存到 <DATA_KEY>.backup.cloud.<ts>（出現在「本機備份」清單，可下載、還原）
+    var cloudBk = {};
+    function writeCloudBackup(obj) {
+      var key = DATA_KEY + '.backup.cloud.' + clock(), old = null;
+      try { old = JSON.parse(storage.getItem(key) || 'null'); } catch (e) { old = null; }
+      storage.setItem(key, JSON.stringify(Object.assign(old && typeof old === 'object' ? old : {}, obj))); // 寫不進去（容量）就丟出：不上傳
+      return key;
+    }
+    function flushCloudBackup(out) {
+      if (!Object.keys(cloudBk).length) return;
+      var key = writeCloudBackup(cloudBk); cloudBk = {};
+      if (out.cloudBackups.indexOf(key) < 0) out.cloudBackups.push(key);
+    }
     function save() { storage.setItem(SYNC_KEY, JSON.stringify(st)); }
     function serverNow() { return clock() + (st.skew || 0); }
     // 新版本一定比它所依據的上一版新，時鐘偏慢也不會輸給自己剛同步下來的資料
@@ -94,6 +109,7 @@
       map[log.date] = log;
       writeMap(map); // quota 錯誤直接丟出，meta 不動
       st.meta[log.date] = { t: stamp(log.date), dirty: true, del: false, base: base, bt: m0 ? m0.bt : -1 };
+      if (m0 && m0.lp) st.meta[log.date].lp = true; // still this device's never-synced day
       save(); emit();
     }
     function remove(date) {
@@ -119,17 +135,24 @@
       userId = id || null; remote = id ? rem : null; lastError = null;
       if (!id) { emit(); return { mode: 'local' }; }
       var result = { mode: 'resume', backupKey: null };
-      if (st.owner === id) { /* 同一帳號：照常同步 */ }
+      cloudBk = {};
+      if (st.owner === id) {
+        // 同一帳號：照常同步。v8：若有待送出的刪除（例如登出時「取代全部」），送出前先把雲端那幾天備份到本機
+        for (var dd in st.meta) if (st.meta[dd].dirty && st.meta[dd].del) { st.preDeleteBackup = true; break; }
+      }
       else if (st.owner == null) {
         // 第一次登入：本機現有資料搬上雲端。先備份原始值，再把沒有 meta 的舊資料標成待上傳。
         // 舊資料 t = 0：雲端若已有同一天（別台裝置上傳過），以雲端為準；本機原值留在備份。
         // 在本機模式下新編輯過的日期有真實時間戳，與雲端照 LWW 公平比較。
+        // v7：聯集，衝突時本機優先（lp）。本機每一天都標 lp；雲端的版本（含 tombstone）不會蓋掉本機，
+        // 本機版以比雲端新的時間戳上傳（見 applyRows 的 lp 分支與上傳被擋時的重送）。只有雲端有的日子照常拉下來。
+        // 本機模式下刪掉的日子（從沒上傳過）不帶到雲端：聯集不刪雲端，雲端若有那天就拉下來。
         result.mode = 'migrate';
         var raw = storage.getItem(DATA_KEY);
         if (raw && raw !== '{}') { result.backupKey = DATA_KEY + '.backup.' + clock(); storage.setItem(result.backupKey, raw); }
-        var map = readMap();
-        for (var d in map) if (!st.meta[d]) st.meta[d] = { t: 0, dirty: true, del: false };
-        st.owner = id; st.cursor = null;
+        var map = readMap(), meta = {};
+        for (var d in map) meta[d] = { t: Math.max(st.meta[d] ? st.meta[d].t : 0, stamp(d)), dirty: true, del: false, lp: true };
+        st.meta = meta; st.owner = id; st.cursor = null;
       } else {
         // 換了另一個帳號：不合併別人的資料。舊快取備份後清空，再從雲端全部拉下來。
         result.mode = 'switch';
@@ -159,11 +182,19 @@
 
     // ---------- 套用雲端資料（按日 LWW） ----------
     // force：伺服器已判定雲端較新（上傳被 LWW 擋下），不再比時間，直接合併/採用
-    function applyRows(rows, report, force, merged) {
+    function applyRows(rows, report, force, merged, kept) {
       var map = readMap(), changed = false;
       rows.forEach(function (row) {
         var d = row.date, t = Number(row.client_updated_at), m = st.meta[d];
         var remoteVal = row.deleted ? null : row.data;
+        // 第一次登入、尚未上傳成功的本機日子：本機優先（雲端不同或是 tombstone 都不採用）
+        if (m && m.lp && m.dirty && !m.del && map[d]) {
+          if (!row.deleted && same(map[d], row.data)) { st.meta[d] = { t: Math.max(t, m.t), dirty: false, del: false, base: remoteVal, bt: t }; return; }
+          st.meta[d] = { t: Math.max(m.t, stamp(d), t + 1), dirty: true, del: false, base: remoteVal, bt: t, lp: true, tries: m.tries || 0 };
+          if (!row.deleted && row.data) cloudBk[d] = row.data; // 本機會蓋掉這個雲端版本 → 上傳前先備份（v8）
+          if (kept && kept.indexOf(d) < 0) kept.push(d);
+          return;
+        }
         if (!force && m && !m.dirty && m.t >= t && !row.deleted === !m.del) return; // 已經是這版
         if (m && m.dirty && m.bt != null && t <= m.bt) return; // 這一版（或更舊）早就知道了：本機修改照常等上傳
         if (m && m.dirty) {
@@ -192,23 +223,36 @@
 
     async function syncOnce() {
       var rem = remote, uid = userId;
-      var out = { pulled: 0, pushed: 0, rejected: 0, overridden: [], merged: [] };
+      var out = { pulled: 0, pushed: 0, rejected: 0, overridden: [], merged: [], keptLocal: [], cloudBackups: [] };
       // 1) pull
       var since = st.cursor ? new Date(Date.parse(st.cursor) - PULL_OVERLAP_MS).toISOString() : null;
       var rows = await rem.pull(since);
       if (userId !== uid) return out; // 同步中途登出/換帳號
       out.pulled = rows.length;
-      var changed = applyRows(rows, out.overridden, false, out.merged);
+      var changed = applyRows(rows, out.overridden, false, out.merged, out.keptLocal);
       rows.forEach(function (r) { if (!st.cursor || Date.parse(r.updated_at) > Date.parse(st.cursor)) st.cursor = r.updated_at; });
       save();
       if (changed) onChange();
+      // 1b) 重新登入後第一次上傳前：要送出的刪除，先把雲端還活著的那幾天備份（v8）
+      if (st.preDeleteBackup) {
+        var dels = Object.keys(st.meta).filter(function (d) { return st.meta[d].dirty && st.meta[d].del; });
+        if (dels.length) {
+          var live = await rem.fetchDates(dels);
+          if (userId !== uid) return out;
+          live.forEach(function (w) { if (!w.deleted && w.data) cloudBk[w.date] = w.data; });
+        }
+        flushCloudBackup(out);
+        delete st.preDeleteBackup; save();
+      }
       // 2) push 待上傳
+      flushCloudBackup(out); // 第一次登入時本機蓋掉的雲端版本（applyRows 收集）
       var map = readMap(), dates = Object.keys(st.meta).filter(function (d) { return st.meta[d].dirty; });
       for (var i = 0; i < dates.length; i += PUSH_BATCH) {
         var batch = dates.slice(i, i + PUSH_BATCH).map(function (d) {
           var m = st.meta[d];
           return { date: d, data: m.del ? null : (map[d] || null), deleted: !!m.del || !map[d], client_updated_at: m.t };
         });
+        flushCloudBackup(out);
         var t0 = clock();
         var written = await rem.push(batch);
         var t1 = clock();
@@ -238,7 +282,12 @@
             var m = st.meta[w.date], b = batch.find(function (x) { return x.date === w.date; });
             return m && b && m.t === b.client_updated_at;
           });
-          if (applyRows(stillSame, out.overridden, true, out.merged)) onChange();
+          // 本機優先的日子被擋（雲端在 pull 之後又被寫入，或時鐘被伺服器壓回）：改用比雲端新的時間戳再送，最多 3 次
+          var lpRetry = stillSame.filter(function (w) { var m = st.meta[w.date]; return m && m.lp && (m.tries || 0) < 3; });
+          lpRetry.forEach(function (w) { st.meta[w.date].tries = (st.meta[w.date].tries || 0) + 1; });
+          if (lpRetry.length) { applyRows(lpRetry, null, false, null, out.keptLocal); again = true; }
+          var rest = stillSame.filter(function (w) { return lpRetry.indexOf(w) < 0 && !(st.meta[w.date] && st.meta[w.date].lp); });
+          if (applyRows(rest, out.overridden, true, out.merged)) onChange();
         }
         save();
       }
@@ -251,6 +300,7 @@
     function sync() {
       if (!userId || !remote) return Promise.resolve(null);
       if (running) { again = true; return running; }
+      for (var d0 in st.meta) if (st.meta[d0].tries) st.meta[d0].tries = 0; // lp 重送次數每次 sync() 重算（防無限迴圈）
       running = (async function () {
         var total = null;
         try {
@@ -258,7 +308,7 @@
             again = false;
             var r = await syncOnce();
             if (!total) total = r;
-            else { total.pulled += r.pulled; total.pushed += r.pushed; total.rejected += r.rejected; total.overridden = total.overridden.concat(r.overridden); total.merged = total.merged.concat(r.merged); }
+            else { total.pulled += r.pulled; total.pushed += r.pushed; total.rejected += r.rejected; total.overridden = total.overridden.concat(r.overridden); total.merged = total.merged.concat(r.merged); r.keptLocal.forEach(function (d) { if (total.keptLocal.indexOf(d) < 0) total.keptLocal.push(d); }); r.cloudBackups.forEach(function (k) { if (total.cloudBackups.indexOf(k) < 0) total.cloudBackups.push(k); }); }
           } while (again && userId);
           lastError = null;
           return total;

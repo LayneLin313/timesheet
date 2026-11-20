@@ -177,6 +177,16 @@
     // Import: copy the current raw value to worklog.v1.backup.<ts>, then write. On failure
     // (e.g. quota) worklog.v1 is untouched and the backup made for it is removed again.
     importLogs: function (logs, mode, now) {
+      // "replace" removes days. Ask first (listing them) when that reaches the cloud: signed in now, or this device is
+      // bound to an account (owner \u2192 the deletions are sent at the next sign-in), or deletions are already queued.
+      // Cancel \u2192 nothing is written (io.js stays on its dialog). v8: also when signed out.
+      if (mode === 'replace') {
+        var keep = {}; logs.forEach(function (l) { keep[l.date] = 1; });
+        var gone = Object.keys(readMap()).filter(function (d) { return !keep[d]; }).sort();
+        var es = engine._state(), queuedDel = Object.keys(es.meta).some(function (d) { return es.meta[d].dirty && es.meta[d].del; });
+        var when = Cloud.getStatus().signedIn ? 'now' : es.owner ? 'later' : queuedDel ? 'local' : null;
+        if (gone.length && when && !confirmCloudDelete(gone, replaceLabel, when)) { var c = new Error('cancelled'); c.cancelled = true; throw c; }
+      }
       var raw = storage.getItem(STORAGE_KEY);
       var base = {};
       if (mode === 'merge' && raw) {
@@ -193,7 +203,50 @@
       Cloud.scheduleSync();
       return { backupKey: backupKey, total: Object.keys(map).length };
     },
+    listBackups: listBackups,
   };
+  // ---------- local backups (NS.v1.backup.<ms>): made before import / restore / first sign-in / account switch ----------
+  // <NS>.v1.backup.<ms> = this device's data before an import/restore/sign-in/switch;
+  // <NS>.v1.backup.cloud.<ms> = cloud versions saved before this device overwrote or deleted them (v8)
+  var BACKUP_RE = new RegExp('^' + STORAGE_KEY.replace(/\./g, '\\.') + '\\.backup\\.(?:(cloud)\\.)?(\\d+)$');
+  function listBackups() {
+    var out = [];
+    if (typeof storage.key !== 'function') return out; // in-memory fallback: nothing persisted
+    for (var i = 0; i < storage.length; i++) {
+      var k = storage.key(i), m = k && BACKUP_RE.exec(k);
+      if (!m) continue;
+      var raw = storage.getItem(k), days = 0, ok = true;
+      try { var o = JSON.parse(raw); if (!o || typeof o !== 'object' || Array.isArray(o)) ok = false; else for (var d in o) if (o[d] && typeof o[d] === 'object' && o[d].date === d) days++; } catch (e) { ok = false; }
+      out.push({ key: k, at: Number(m[2]), kind: m[1] ? 'cloud' : 'local', days: days, bytes: raw ? raw.length : 0, ok: ok });
+    }
+    return out.sort(function (a, b) { return b.at - a.at; });
+  }
+  function backupExportJson(key) {
+    var o = JSON.parse(storage.getItem(key) || '{}');
+    var logs = Object.keys(o).sort().map(function (d) { return o[d]; }).filter(function (l) { return l && typeof l === 'object' && l.date; });
+    return JSON.stringify({ app: 'work-log', version: 1, exportedAt: new Date().toISOString(), logs: logs }, null, 2);
+  }
+  var replaceLabel = '\u300C\u53D6\u4EE3\u5168\u90E8\u300D';
+  function confirmCloudDelete(gone, label, when) {
+    var list = gone.slice(0, 8).join('\u3001') + (gone.length > 8 ? ' \u2026\u7B49' : '');
+    var msg = when === 'now'
+      ? label + '\u6703\u540C\u6B65\u522A\u9664\u96F2\u7AEF\u8CC7\u6599\u3002\n\n\u5C07\u5F9E\u96F2\u7AEF\u522A\u9664 ' + gone.length + ' \u5929\uFF1A' + list + '\n\u5DF2\u767B\u5165\u7684\u5176\u4ED6\u88DD\u7F6E\u540C\u6B65\u5F8C\u4E5F\u6703\u522A\u9664\u9019\u4E9B\u65E5\u5B50\u3002\u9019\u53F0\u88DD\u7F6E\u6703\u5148\u5099\u4EFD\u76EE\u524D\u7684\u8CC7\u6599\u3002'
+      : when === 'later'
+      ? label + '\u6703\u522A\u9664 ' + gone.length + ' \u5929\uFF1A' + list + '\n\n\u9019\u53F0\u88DD\u7F6E\u767B\u5165\u904E\u96F2\u7AEF\u5E33\u865F\uFF1A\u91CD\u65B0\u767B\u5165\u5F8C\uFF0C\u9019\u4E9B\u65E5\u5B50\u6703\u5F9E\u96F2\u7AEF\u522A\u9664\uFF0C\u5DF2\u767B\u5165\u7684\u5176\u4ED6\u88DD\u7F6E\u540C\u6B65\u5F8C\u4E5F\u6703\u522A\u9664\u3002\u9001\u51FA\u522A\u9664\u524D\uFF0C\u6703\u5148\u628A\u96F2\u7AEF\u90A3\u5E7E\u5929\u5099\u4EFD\u5230\u300C\u672C\u6A5F\u5099\u4EFD\u300D\u3002\u9019\u53F0\u88DD\u7F6E\u4E5F\u6703\u5148\u5099\u4EFD\u76EE\u524D\u7684\u8CC7\u6599\u3002'
+      : label + '\u6703\u522A\u9664 ' + gone.length + ' \u5929\uFF1A' + list + '\n\n\u9019\u53F0\u88DD\u7F6E\u9084\u6709\u5C1A\u672A\u9001\u51FA\u7684\u522A\u9664\u3002\u9019\u53F0\u88DD\u7F6E\u6C92\u6709\u767B\u5165\u904E\u5E33\u865F\uFF0C\u7B2C\u4E00\u6B21\u767B\u5165\u6642\u4EE5\u806F\u96C6\u8655\u7406\uFF0C\u4E0D\u6703\u522A\u9664\u96F2\u7AEF\u8CC7\u6599\u3002\u9019\u53F0\u88DD\u7F6E\u6703\u5148\u5099\u4EFD\u76EE\u524D\u7684\u8CC7\u6599\u3002';
+    return typeof window.confirm === 'function' && window.confirm(msg + '\n\n\u78BA\u5B9A\u8981\u53D6\u4EE3\u55CE\uFF1F');
+  }
+  // restore = the same path as importing that backup (merge by default; replace asks before deleting cloud days)
+  function restoreBackup(key, mode) {
+    var raw = storage.getItem(key);
+    var res = window.WorkLogIO && window.WorkLogIO.parseImportJson ? window.WorkLogIO.parseImportJson(raw || '') : null;
+    if (!res || !res.ok) throw new Error('\u9019\u4EFD\u5099\u4EFD\u7121\u6CD5\u8B80\u53D6\uFF1A' + (res && res.error || '\u683C\u5F0F\u4E0D\u6B63\u78BA'));
+    var r;
+    replaceLabel = '\u300C\u53D6\u4EE3\u300D\u9084\u539F';
+    try { r = window.WorkLogLocal.importLogs(res.logs, mode === 'replace' ? 'replace' : 'merge'); } finally { replaceLabel = '\u300C\u53D6\u4EE3\u5168\u90E8\u300D'; }
+    window.WorkLogLocal.discardDrafts(); rebuild();
+    return { backupKey: r.backupKey, total: r.total, restored: res.logs.length };
+  }
   // ---------- cloud: auth (Supabase) + auto sync ----------
   // Providers are data, so adding one later (e.g. Apple) is a config change, not a code change.
   var PROVIDERS = {
@@ -257,7 +310,8 @@
       var res = engine.setUser(id, window.WorkLogSyncCore.supabaseRemote(client, id));
       if (res.mode === 'switch') { if (SDK.__discardAll) SDK.__discardAll(); dirty.clear(); }
       syncNow(true).then(function (r) {
-        if (res.mode === 'migrate') toast(r ? '\u5DF2\u628A\u672C\u6A5F\u8CC7\u6599\u642C\u4E0A\u96F2\u7AEF' + (r.overridden.length ? '\uFF08' + r.overridden.length + ' \u5929\u96F2\u7AEF\u5DF2\u6709\uFF0C\u4EE5\u96F2\u7AEF\u70BA\u6E96\uFF1B\u539F\u672C\u6A5F\u8CC7\u6599\u5DF2\u5099\u4EFD\uFF09' : '') : '\u5DF2\u767B\u5165\uFF0C\u9023\u7DDA\u5F8C\u6703\u628A\u672C\u6A5F\u8CC7\u6599\u642C\u4E0A\u96F2\u7AEF');
+        if (res.mode === 'migrate') toast(r ? '\u5DF2\u628A\u672C\u6A5F\u8CC7\u6599\u642C\u4E0A\u96F2\u7AEF' + (r.keptLocal.length ? '\uFF08' + r.keptLocal.length + ' \u5929\u4EE5\u9019\u53F0\u88DD\u7F6E\u70BA\u6E96' + (r.cloudBackups.length ? '\uFF0C\u96F2\u7AEF\u820A\u7248\u5DF2\u5099\u4EFD' : '') + '\uFF09' : '') : '\u5DF2\u767B\u5165\uFF0C\u9023\u7DDA\u5F8C\u6703\u628A\u672C\u6A5F\u8CC7\u6599\u642C\u4E0A\u96F2\u7AEF');
+        else if (r && r.cloudBackups.length) toast('\u5DF2\u540C\u6B65\uFF1B\u9001\u51FA\u522A\u9664\u524D\uFF0C\u96F2\u7AEF\u90A3\u5E7E\u5929\u5DF2\u5099\u4EFD\u5230\u300C\u672C\u6A5F\u5099\u4EFD\u300D');
         else if (res.mode === 'switch') toast('\u5DF2\u5207\u63DB\u5E33\u865F\uFF1B\u539F\u672C\u7684\u672C\u6A5F\u8CC7\u6599\u5DF2\u5099\u4EFD\uFF0C\u672A\u5408\u4F75');
       });
     }
@@ -392,7 +446,7 @@
       '.wl-acct-b:focus-visible,.wl-acct-in:focus-visible{outline:2px solid var(--foreground);outline-offset:2px}' +
       '.wl-acct-in{height:38px;padding:0 10px;border:1px solid var(--foreground);border-radius:6px;background:var(--background);color:var(--foreground);font-size:16px;width:100%}' +
       '.wl-acct-mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;word-break:break-all}' +
-      '.wl-acct-list{display:flex;flex-direction:column;gap:6px}.wl-acct-item{display:flex;gap:8px;align-items:center;justify-content:space-between;border:1px solid var(--topbar-border);border-radius:6px;padding:6px 8px}' +
+      '.wl-acct-stack{flex-direction:column;align-items:stretch}.wl-acct-list{display:flex;flex-direction:column;gap:6px}.wl-acct-item{display:flex;gap:8px;align-items:center;justify-content:space-between;border:1px solid var(--topbar-border);border-radius:6px;padding:6px 8px}' +
       '.wl-acct-btn{position:relative}.wl-acct-dot{position:absolute;top:9px;right:9px;width:8px;height:8px;border-radius:50%;background:var(--topbar-fg);box-shadow:0 0 0 2px var(--topbar-bg)}';
     var s = document.createElement('style'); s.textContent = '@layer components{' + css + '}'; document.head.appendChild(s);
   })();
@@ -453,6 +507,38 @@
       R.msg ? h('p', { className: 'wl-acct-small wl-acct-strong', role: 'alert' }, R.msg) : null);
   }
 
+  function fmtStamp(ms) { var d = new Date(ms), z = function (n) { return String(n).padStart(2, '0'); }; return d.getFullYear() + z(d.getMonth() + 1) + z(d.getDate()) + '-' + z(d.getHours()) + z(d.getMinutes()) + z(d.getSeconds()); }
+  function BackupSection() {
+    var _v = React.useState(0), ver = _v[0], setVer = _v[1];
+    var _m = React.useState(''), msg = _m[0], setMsg = _m[1];
+    var list = listBackups();
+    var signedIn = Cloud.getStatus().signedIn;
+    function restore(b, mode) {
+      setMsg('');
+      try { var r = restoreBackup(b.key, mode); toast('\u5DF2\u9084\u539F ' + r.restored + ' \u5929' + (mode === 'replace' ? '\uFF08\u53D6\u4EE3\uFF09' : '\uFF08\u5408\u4F75\uFF09') + (r.backupKey ? '\uFF1B\u9084\u539F\u524D\u7684\u8CC7\u6599\u5DF2\u5099\u4EFD' : '')); setVer(ver + 1); }
+      catch (e) { if (!(e && e.cancelled)) setMsg(e && e.message || String(e)); }
+    }
+    function download(b) {
+      var url = URL.createObjectURL(new Blob([backupExportJson(b.key)], { type: 'application/json' }));
+      var a = document.createElement('a'); a.href = url; a.download = NS.replace(/\./g, '-') + '-backup-' + (b.kind === 'cloud' ? 'cloud-' : '') + fmtStamp(b.at) + '.json'; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    }
+    return h('div', { className: 'wl-acct-col', role: 'region', 'aria-label': '\u672C\u6A5F\u5099\u4EFD' },
+      h('div', { className: 'wl-acct-sep' }),
+      h('p', { className: 'wl-acct-strong' }, '\u672C\u6A5F\u5099\u4EFD'),
+      h('p', { className: 'wl-acct-small' }, '\u532F\u5165\u3001\u9084\u539F\u3001\u7B2C\u4E00\u6B21\u767B\u5165\u3001\u5207\u63DB\u5E33\u865F\u4E4B\u524D\u6703\u81EA\u52D5\u5099\u4EFD\u3002\u300C\u9084\u539F\uFF08\u5408\u4F75\uFF09\u300D\u628A\u5099\u4EFD\u7684\u65E5\u5B50\u52A0\u56DE\u4F86\uFF0C\u540C\u4E00\u5929\u4EE5\u5099\u4EFD\u70BA\u6E96\uFF0C\u4E0D\u522A\u9664\u4EFB\u4F55\u65E5\u5B50' + (signedIn ? '\uFF0C\u4E26\u540C\u6B65\u5230\u96F2\u7AEF' : '') + '\uFF1B\u300C\u53D6\u4EE3\u300D\u53EA\u7559\u5099\u4EFD\u88E1\u7684\u65E5\u5B50' + (signedIn ? '\uFF0C\u6703\u5148\u78BA\u8A8D\u8981\u5F9E\u96F2\u7AEF\u522A\u9664\u54EA\u4E9B\u5929' : '') + '\u3002\u300C\u96F2\u7AEF\u820A\u7248\u300D\u662F\u9019\u53F0\u88DD\u7F6E\u84CB\u6389\u6216\u522A\u9664\u4E4B\u524D\u7684\u96F2\u7AEF\u7248\u672C\u3002\u9084\u539F\u524D\u6703\u5148\u5099\u4EFD\u76EE\u524D\u7684\u8CC7\u6599\u3002'),
+      list.length ? h('div', { className: 'wl-acct-list' }, list.map(function (b) {
+        var label = (b.kind === 'cloud' ? '\u96F2\u7AEF\u820A\u7248 \u00B7 ' : '') + fmtTime(b.at) + ' \u00B7 ' + b.days + ' \u5929';
+        return h('div', { key: b.key, className: 'wl-acct-item wl-acct-stack', 'data-backup-key': b.key },
+          h('div', { className: 'wl-acct-small' }, h('span', { className: 'wl-acct-strong' }, label), b.ok ? null : '\uFF08\u7121\u6CD5\u8B80\u53D6\uFF09'),
+          h('div', { className: 'wl-acct-row' },
+            B({ className: 'sm', disabled: !b.ok, 'aria-label': '\u4E0B\u8F09\u5099\u4EFD ' + label, onClick: function () { download(b); } }, '\u4E0B\u8F09'),
+            b.kind === 'cloud' ? null : B({ className: 'sm', disabled: !b.ok, 'aria-label': '\u53D6\u4EE3\u70BA\u5099\u4EFD ' + label, onClick: function () { restore(b, 'replace'); } }, '\u53D6\u4EE3'), // \u96F2\u7AEF\u820A\u7248\u53EA\u542B\u90E8\u5206\u65E5\u5B50\uFF1A\u53EA\u7D66\u5408\u4F75
+            B({ className: 'sm primary', disabled: !b.ok, 'aria-label': '\u9084\u539F\u5099\u4EFD ' + label + '\uFF08\u5408\u4F75\uFF09', onClick: function () { restore(b, 'merge'); } }, '\u9084\u539F\uFF08\u5408\u4F75\uFF09')));
+      })) : h('p', { className: 'wl-acct-small' }, '\u76EE\u524D\u6C92\u6709\u5099\u4EFD\u3002'),
+      msg ? h('p', { className: 'wl-acct-small wl-acct-strong', role: 'alert' }, msg) : null);
+  }
+
   function AccountDialog(p) {
     var ref = React.useRef(null), s = p.status;
     var _e = React.useState(''), email = _e[0], setEmail = _e[1];
@@ -478,7 +564,8 @@
               h('div', { className: 'wl-acct-row' },
                 B({ className: 'sm', disabled: R.busy, onClick: function () { R.run(Cloud.sendEmail(email)); } }, '\u91CD\u65B0\u5BC4\u9001'),
                 B({ className: 'sm primary', disabled: R.busy || code.length < 6, onClick: function () { R.run(Cloud.verifyCode(email, code)).then(function (r) { if (r.ok) p.onClose(); }); } }, '\u767B\u5165')))) : null,
-        !s.providers.length && !s.emailOtp ? h('p', { className: 'wl-acct-small' }, '\u5C1A\u672A\u555F\u7528\u4EFB\u4F55\u767B\u5165\u65B9\u5F0F\u3002') : null);
+        !s.providers.length && !s.emailOtp ? h('p', { className: 'wl-acct-small' }, '\u5C1A\u672A\u555F\u7528\u4EFB\u4F55\u767B\u5165\u65B9\u5F0F\u3002') : null,
+        h(BackupSection));
     } else {
       body = h('div', { className: 'wl-acct-col' },
         h('p', null, '\u5DF2\u767B\u5165\uFF1A', h('span', { className: 'wl-acct-strong' }, s.email || '')),
@@ -491,6 +578,7 @@
           B({ className: 'sm', disabled: R.busy, onClick: function () { R.run(Cloud.signOut(false)).then(function (r) { if (r.ok) p.onClose(); }); } }, '\u767B\u51FA'),
           B({ className: 'sm', disabled: R.busy, title: '\u767B\u51FA\u4E26\u6E05\u9664\u9019\u53F0\u88DD\u7F6E\u4E0A\u7684\u8CC7\u6599\uFF08\u96F2\u7AEF\u4FDD\u7559\uFF09', onClick: function () { R.run(Cloud.signOut(true)).then(function (r) { if (r.ok) p.onClose(); }); } }, '\u767B\u51FA\u4E26\u6E05\u9664\u672C\u6A5F')),
         h('p', { className: 'wl-acct-small' }, '\u767B\u51FA\u5F8C\u8CC7\u6599\u4ECD\u7559\u5728\u9019\u53F0\u88DD\u7F6E\uFF0C\u53EF\u7E7C\u7E8C\u4EE5\u672C\u6A5F\u6A21\u5F0F\u4F7F\u7528\u3002\u5171\u7528\u88DD\u7F6E\u8ACB\u9078\u300C\u767B\u51FA\u4E26\u6E05\u9664\u672C\u6A5F\u300D\u3002'),
+        h(BackupSection),
         s.online ? h(TokenSection) : null);
     }
     return h('dialog', { ref: ref, className: 'wl-acct-dialog', 'aria-label': '\u5E33\u865F\u8207\u540C\u6B65', onClose: p.onClose, onCancel: p.onClose },

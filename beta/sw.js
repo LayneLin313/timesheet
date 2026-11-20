@@ -9,7 +9,7 @@
  * 'controllerchange' and reloads once, so open tabs switch to the new version.
  * localStorage (beta app data, keys 'worklog.beta.*') is never touched by this worker.
  */
-const VERSION = 'v6';
+const VERSION = 'v8';
 // beta (/timesheet/beta/): own cache prefix so it never collides with or deletes the production timesheet-* caches
 const CACHE_PREFIX = 'worklog-beta-';
 const CACHE = `${CACHE_PREFIX}${VERSION}`;

@@ -9,7 +9,7 @@
  * 'controllerchange' and reloads once, so open tabs switch to the new version.
  * localStorage (app data, key 'worklog.v1') is never touched by this worker.
  */
-const VERSION = 'v4';
+const VERSION = 'v8';
 const CACHE = `timesheet-${VERSION}`;
 const PRECACHE = [
   './',
@@ -17,6 +17,9 @@ const PRECACHE = [
   './manifest.webmanifest',
   './vendor/react.production.min.js',
   './vendor/react-dom.production.min.js',
+  './vendor/supabase.js',
+  './app/config.js',
+  './app/sync-core.js',
   './app/sdk-shim.js',
   './app/worklog-plugin.js',
   './app/io.js',
@@ -51,6 +54,8 @@ self.addEventListener('fetch', (event) => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
+  // Supabase auth/REST: always network, never cached (already cross-origin; explicit in case of a custom domain proxy)
+  if (/\.supabase\.(co|in)$/.test(url.hostname)) return;
 
   // Page navigations: serve the cached app shell (works offline, also for ./?query).
   if (req.mode === 'navigate') {

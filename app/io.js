@@ -161,6 +161,7 @@
       try { result = L.importLogs(p.logs, mode); }
       catch (err) {
         setBusy(false);
+        if (err && err.cancelled) return; // [auth-sync] replace-all cancelled at the cloud-delete confirmation: nothing changed
         setPhase({ kind: 'error', details: [], error: isQuotaError(err)
           ? '\u5132\u5B58\u7A7A\u9593\u4E0D\u8DB3\uFF0C\u5DF2\u53D6\u6D88\u532F\u5165\uFF0C\u539F\u672C\u7684\u8CC7\u6599\u6C92\u6709\u8B8A\u66F4\u3002\u53EF\u522A\u9664\u820A\u7684\u5099\u4EFD\u6216\u6E05\u6389\u90E8\u5206\u8CC7\u6599\u5F8C\u518D\u8A66\u3002'
           : '\u532F\u5165\u5931\u6557\uFF0C\u539F\u672C\u7684\u8CC7\u6599\u6C92\u6709\u8B8A\u66F4\u3002' });
