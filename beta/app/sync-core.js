@@ -34,22 +34,52 @@
   function same(a, b) { return canon(a) === canon(b); }
 
   // ---------- field-level 3-way merge ----------
-  // Time fields move together (workMinutes must match the times); every other field is its own unit.
+  // Time fields move together (workMinutes must match the times). v9: the day-kind flags (休 / 特休 / 加班費) also
+  // move together, because the App only saves them in valid combinations (加班費 only with 休; 特休 alone).
+  // Every other field (note, unknown fields) is its own unit.
   // A unit changed on only one side takes that side; changed on both sides -> the later edit wins.
+  // Afterwards the result is made a state the App can save (v10 normal-day times repair + normalizeKind below).
   var TIME_UNIT = ['clockIn', 'clockOut', 'breaks', 'workMinutes'];
+  var KIND_UNIT = ['isLeave', 'isSpecialLeave', 'isOvertimePay'];
   function emptyLog(date) { return { date: date, clockIn: '', clockOut: '', breaks: [], workMinutes: 0, isLeave: false, isSpecialLeave: false, isOvertimePay: false, note: '' }; }
   function unitVal(o, u) { var r = {}; u.forEach(function (k) { r[k] = o ? o[k] : undefined; }); return r; }
   function merge3(base, local, remote, localT, remoteT) {
     var keys = {}, out = {};
     [base, local, remote].forEach(function (o) { Object.keys(o || {}).forEach(function (k) { keys[k] = 1; }); });
-    var units = [TIME_UNIT].concat(Object.keys(keys).filter(function (k) { return TIME_UNIT.indexOf(k) < 0; }).map(function (k) { return [k]; }));
+    var units = [TIME_UNIT, KIND_UNIT].concat(Object.keys(keys).filter(function (k) { return TIME_UNIT.indexOf(k) < 0 && KIND_UNIT.indexOf(k) < 0; }).map(function (k) { return [k]; }));
+    var kindFrom = null; // which input the day-kind flags came from
     units.forEach(function (u) {
       var b = unitVal(base, u), l = unitVal(local, u), r = unitVal(remote, u);
       var lc = !same(l, b), rc = !same(r, b);
-      var pick = lc && rc ? (localT > remoteT ? l : r) : lc ? l : r;
+      var fromLocal = lc && rc ? localT > remoteT : lc;
+      var pick = fromLocal ? l : r;
+      if (u === KIND_UNIT) kindFrom = fromLocal ? 'local' : 'remote';
       u.forEach(function (k) { if (pick[k] !== undefined) out[k] = pick[k]; });
     });
-    return out;
+    // v10: flags and times win separately, so a normal day (not 休, not 特休) could end up with the times of a side
+    // that was 休 / 特休 without times, i.e. a normal day with no times (the App never saves that: 上班下班都要選).
+    // Example: base 休 08:31–17:45; local (later) → normal day, same times; remote → 特休 → flags from local,
+    // times from remote (empty). Then take the times from the side whose flags won; if that side has none, the other side's.
+    if (out.isLeave !== true && out.isSpecialLeave !== true && out.clockIn !== undefined && !hasTimes(out)) {
+      var order = kindFrom === 'local' ? [local, remote] : [remote, local];
+      for (var i = 0; i < order.length; i++) {
+        if (hasTimes(order[i])) { TIME_UNIT.forEach(function (k) { if (order[i][k] !== undefined) out[k] = order[i][k]; }); break; }
+      }
+    }
+    return normalizeKind(out);
+  }
+  function hasTimes(o) { return !!(o && o.clockIn && o.clockOut); }
+  // The App's own save rules (site/app/worklog-plugin.js handleSave), applied to a merged result only:
+  //   特休 → no times (clockIn/clockOut '', breaks [], workMinutes 0), not 休, no 加班費;  not 休 → no 加班費.
+  // Example (possible since migration 004 lets the attendance agent write 休 days): this device turns a 休 day into
+  // 特休 offline while the agent writes punch times into the 休 day → without this the day would be 特休 with times.
+  function normalizeKind(o) {
+    if (o.isSpecialLeave === true) {
+      if (o.clockIn !== undefined) o.clockIn = ''; if (o.clockOut !== undefined) o.clockOut = '';
+      if (o.breaks !== undefined) o.breaks = []; if (o.workMinutes !== undefined) o.workMinutes = 0;
+      if (o.isLeave !== undefined) o.isLeave = false; if (o.isOvertimePay !== undefined) o.isOvertimePay = false;
+    } else if (o.isLeave !== true && o.isOvertimePay === true) o.isOvertimePay = false;
+    return o;
   }
 
   function createEngine(opts) {
